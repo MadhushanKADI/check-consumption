@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # # check-consumption
 
 Dashboard showing the electricity consumption (kWh) of a UPS monitored by ViewPower.
@@ -14,9 +13,8 @@ Open http://localhost:15180 and set your UPS rated power (W) in the form.
 Environment variables: `VIEWPOWER_URL` (default `http://localhost:15178/ViewPower`), `UPS_PORT_NAME` (default `USB24875B93`), `UPS_RATED_WATTS` (default 600), `PORT` (default 15180), `HOST` (default `127.0.0.1`, localhost only; set `0.0.0.0` to expose on the LAN).
 
 Readings accumulate in `data.json` only while the server is running. Stored values are load-percent-hours, so changing the rated watts re-scales history.
-=======
-# check-consumption
-check-consumption
+
+## Python app
 
 Web app that reads a ViewPower Monitor System UPS and shows energy used (kWh).
 
@@ -26,4 +24,3 @@ Web app that reads a ViewPower Monitor System UPS and shows energy used (kWh).
 Open http://localhost:8000/. See `app.py` docstring for all settings
 (`LOAD_REGEX` + `UPS_RATED_WATTS` can be used if only load % is exposed).
 Run tests: `python3 -m unittest discover tests`.
->>>>>>> origin/main
