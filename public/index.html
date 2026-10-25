@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UPS Consumption</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; margin: 0; padding: 20px; }
+  h1 { margin: 0 0 16px; font-size: 22px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: #1f2937; border-radius: 10px; padding: 14px; }
+  .card .l { font-size: 12px; color: #9ca3af; text-transform: uppercase; }
+  .card .v { font-size: 26px; font-weight: 600; margin-top: 4px; }
+  .card .s { font-size: 12px; color: #9ca3af; }
+  .err { background: #7f1d1d; padding: 10px; border-radius: 8px; margin-bottom: 12px; display: none; }
+  canvas { background: #1f2937; border-radius: 10px; width: 100%; height: 220px; margin-bottom: 16px; }
+  form { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+  label { font-size: 12px; color: #9ca3af; display: block; }
+  input { padding: 6px; border-radius: 6px; border: 1px solid #374151; background: #111827; color: #e5e7eb; width: 130px; }
+  button { padding: 7px 14px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>⚡ UPS Electricity Consumption</h1>
+<div class="err" id="err"></div>
+<div class="grid">
+  <div class="card"><div class="l">Current power</div><div class="v" id="watts">–</div><div class="s" id="liveInfo"></div></div>
+  <div class="card"><div class="l">Today</div><div class="v" id="today">–</div><div class="s" id="todayCost"></div></div>
+  <div class="card"><div class="l">Last 7 days</div><div class="v" id="week">–</div><div class="s" id="weekCost"></div></div>
+  <div class="card"><div class="l">This month</div><div class="v" id="month">–</div><div class="s" id="monthCost"></div></div>
+  <div class="card"><div class="l">Total tracked</div><div class="v" id="total">–</div><div class="s" id="totalCost"></div></div>
+</div>
+<h3>Today by hour (kWh)</h3><canvas id="hourly"></canvas>
+<h3>Last 30 days (kWh)</h3><canvas id="daily"></canvas>
+<form id="cfg">
+  <div><label>UPS rated power (W)</label><input id="rated" type="number" min="1" step="1"></div>
+  <div><label>Price per kWh (optional)</label><input id="price" type="number" min="0" step="0.01"></div>
+  <button>Save</button>
+</form>
+<p style="font-size:12px;color:#9ca3af">Power = load % reported by ViewPower × rated watts. Set the rated W (real watts, not VA) of your UPS for accurate kWh.</p>
+<script>
+const $ = (id) => document.getElementById(id);
+function bars(canvas, labels, values) {
+  const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const c = canvas.getContext('2d'); c.scale(dpr, dpr);
+  const max = Math.max(...values, 0.001), pad = 28, bw = (w - pad) / Math.max(values.length, 1);
+  c.fillStyle = '#9ca3af'; c.font = '10px sans-serif';
+  c.fillText(max.toFixed(2), 2, 12);
+  values.forEach((v, i) => {
+    const bh = (v / max) * (h - 30);
+    c.fillStyle = '#3b82f6'; c.fillRect(pad + i * bw + 1, h - 16 - bh, Math.max(bw - 2, 1), bh);
+    if (values.length <= 24 || i % 5 === 0) { c.fillStyle = '#9ca3af'; c.fillText(labels[i], pad + i * bw, h - 3); }
+  });
+}
+async function refresh() {
+  try {
+    const d = await (await fetch('/api/summary')).json();
+    const l = d.live, p = d.config.pricePerKwh;
+    $('err').style.display = l.ok ? 'none' : 'block';
+    if (!l.ok) $('err').textContent = 'Cannot read ViewPower: ' + l.error;
+    else {
+      $('watts').textContent = Math.round(l.watts) + ' W';
+      $('liveInfo').textContent = `${l.loadPct}% load · ${l.outputVoltage} V · ${l.workMode}`;
+    }
+    for (const k of ['today', 'week', 'month', 'total']) {
+      $(k).textContent = d[k].toFixed(3) + ' kWh';
+      $(k + 'Cost').textContent = p ? (d[k] * p).toFixed(2) + ' cost' : '';
+    }
+    if (document.activeElement.tagName !== 'INPUT') { $('rated').value = d.config.ratedWatts; $('price').value = p; }
+    bars($('hourly'), d.hourlyToday.map((_, i) => i), d.hourlyToday);
+    bars($('daily'), d.daily.map((x) => x.date.slice(5)), d.daily.map((x) => x.kwh));
+  } catch (e) { $('err').style.display = 'block'; $('err').textContent = 'Server unreachable'; }
+}
+$('cfg').onsubmit = async (e) => {
+  e.preventDefault();
+  await fetch('/api/config', { method: 'POST', body: JSON.stringify({ ratedWatts: $('rated').value, pricePerKwh: $('price').value || 0 }) });
+  refresh();
+};
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>
