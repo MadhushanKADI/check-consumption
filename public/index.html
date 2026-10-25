@@ -35,6 +35,9 @@
 </div>
 <h3>Power, last 24 h (W)</h3><canvas id="power"></canvas>
 <h3>Voltage, last 24 h (V) <span style="font-size:12px;color:#9ca3af">blue = input, green = output</span></h3><canvas id="volt"></canvas>
+<h3>Top apps by estimated energy</h3>
+<table id="apps" style="width:100%;border-collapse:collapse;margin-bottom:6px;font-size:14px"></table>
+<p style="font-size:12px;color:#9ca3af;margin-top:0">Estimate: power above the PC's idle level is shared between apps by their CPU and GPU activity. Games and GPU-heavy apps show up here.</p>
 <h3>Power cuts</h3>
 <table id="events" style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:14px"></table>
 <h3>Today by hour (kWh)</h3><canvas id="hourly"></canvas>
@@ -76,7 +79,7 @@ function lines(canvas, series) {
   for (let hr = 0; hr <= 24; hr += 6) c.fillText(new Date(t0 + hr * 3600000).getHours() + 'h', X(t0 + hr * 3600000) - 6, h - 3);
   series.forEach((s) => {
     c.strokeStyle = s.color; c.lineWidth = 1.5; c.beginPath();
-    s.pts.forEach((p, i) => (i && p.t - s.pts[i - 1].t < 120000 ? c.lineTo(X(p.t), Y(p.y)) : c.moveTo(X(p.t), Y(p.y))));
+    s.pts.forEach((p, i) => (i && p.t - s.pts[i - 1].t < 200000 ? c.lineTo(X(p.t), Y(p.y)) : c.moveTo(X(p.t), Y(p.y))));
     c.stroke();
   });
 }
@@ -105,6 +108,10 @@ async function refresh() {
       { color: '#3b82f6', pts: d.samples.filter((s) => Number.isFinite(s.vin)).map((s) => ({ t: s.t, y: s.vin })) },
       { color: '#22c55e', pts: d.samples.filter((s) => Number.isFinite(s.vout)).map((s) => ({ t: s.t, y: s.vout })) },
     ]);
+    $('apps').innerHTML = d.apps.length
+      ? '<tr style="color:#9ca3af;text-align:left"><th>App</th><th>Today</th><th>7 days</th><th>Total</th></tr>' + d.apps.map((a) =>
+        `<tr><td>${a.name.replace(/[<>&]/g, '')}</td><td>${a.today.toFixed(3)} kWh</td><td>${a.week.toFixed(3)} kWh</td><td>${a.total.toFixed(3)} kWh</td></tr>`).join('')
+      : '<tr><td style="color:#9ca3af">Collecting data...</td></tr>';
     const ev = $('events');
     ev.innerHTML = d.events.length
       ? '<tr style="color:#9ca3af;text-align:left"><th>Started</th><th>Duration</th><th>Lowest battery</th></tr>' + d.events.map((e) =>
@@ -119,7 +126,7 @@ $('cfg').onsubmit = async (e) => {
   await fetch('/api/config', { method: 'POST', body: JSON.stringify({ ratedWatts: $('rated').value, pricePerKwh: $('price').value || 0 }) });
   refresh();
 };
-refresh(); setInterval(refresh, 5000);
+refresh(); setInterval(refresh, 10000);
 </script>
 </body>
 </html>

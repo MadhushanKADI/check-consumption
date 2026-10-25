@@ -1,6 +1,7 @@
 // Polls ViewPower, integrates power over time into kWh, serves a dashboard.
 const http = require('http');
 const fs = require('fs');
+const { execFile } = require('child_process');
 const path = require('path');
 
 const VP = process.env.VIEWPOWER_URL || 'http://localhost:15178/ViewPower';
@@ -22,6 +23,7 @@ store.samples ||= []; // {t, pct, vin, vout, bat} every SAMPLE_MS, kept for 24 h
 store.trackedHours ||= {}; // hours actually monitored, for projections
 store.trackedLoadPctHours ||= {}; // consumption from samples taken by this version only
 store.events ||= []; // power cuts: {start, end, minBat}
+store.appWh ||= {}; // estimated energy per app: appWh[YYYY-MM-DD][name] = Wh
 const SAMPLE_MS = 30000;
 const KEEP_MS = 24 * 3600000;
 // an outage left open by a restart ends at the last known sample
@@ -86,6 +88,33 @@ async function poll() {
   }
 }
 
+// Splits the load above the PC's idle baseline between apps by their CPU+GPU activity (an estimate).
+const APP_SAMPLE_MS = 60000;
+const IDLE_MARGIN_W = 10; // skip the (costly) process sampling when load is within this of idle
+const IGNORED_APPS = new Set(['Idle', '_Total']);
+let sampling = false;
+function sampleApps() {
+  if (sampling || !live.ok) return;
+  const lows = store.samples.map((s) => s.pct * config.ratedWatts / 100);
+  const baseline = lows.length > 10 ? Math.min(...lows) : 0;
+  const dynamic = Math.max(0, live.watts - baseline);
+  if (dynamic < IDLE_MARGIN_W) return;
+  sampling = true;
+  execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'sample-apps.ps1')],
+    { timeout: 20000, windowsHide: true }, (err, stdout) => {
+      sampling = false;
+      if (err) return;
+      try {
+        const apps = JSON.parse(stdout).filter((a) => !IGNORED_APPS.has(a.n));
+        const scored = apps.map((a) => ({ n: a.n, s: a.cpu + a.gpu })).filter((a) => a.s > 0.3);
+        const total = scored.reduce((x, a) => x + a.s, 0);
+        if (!total) return;
+        const day = (store.appWh[dayKey(new Date())] ||= {});
+        for (const a of scored) day[a.n] = (day[a.n] || 0) + dynamic * (a.s / total) * (APP_SAMPLE_MS / 3600000);
+      } catch {}
+    });
+}
+
 function save() {
   fs.writeFile(DATA_FILE, JSON.stringify(store), () => {});
 }
@@ -112,6 +141,18 @@ function summary() {
     week, month: mon, total,
     hourlyToday: (store.loadPctHours[today] || Array(24).fill(0)).map((x) => x * config.ratedWatts / 100 / 1000),
     daily: daily.slice(-30),
+    apps: (() => {
+      const week = {}, all = {};
+      for (const [d, m] of Object.entries(store.appWh)) {
+        for (const [n, wh] of Object.entries(m)) {
+          all[n] = (all[n] || 0) + wh / 1000;
+          if (d >= weekAgo) week[n] = (week[n] || 0) + wh / 1000;
+        }
+      }
+      const todayApps = store.appWh[today] || {};
+      return Object.keys(all).map((n) => ({ name: n, today: (todayApps[n] || 0) / 1000, week: week[n] || 0, total: all[n] }))
+        .sort((a, b) => b.week - a.week || b.total - a.total).slice(0, 15);
+    })(),
     projectedMonth: (() => {
       const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
       const hoursTracked = Object.keys(store.trackedHours).filter((d) => d.startsWith(month))
@@ -120,7 +161,8 @@ function summary() {
         .reduce((n, d) => n + kwh(store.trackedLoadPctHours[d]), 0);
       return hoursTracked > 0.1 ? (trackedKwh / hoursTracked) * dim * 24 : 0;
     })(),
-    samples: store.samples.map((s) => ({ t: s.t, w: s.pct * config.ratedWatts / 100, vin: s.vin, vout: s.vout, bat: s.bat })),
+    samples: store.samples.filter((_, i, a) => i % 4 === 0 || i === a.length - 1)
+      .map((s) => ({ t: s.t, w: Math.round(s.pct * config.ratedWatts) / 100, vin: s.vin, vout: s.vout, bat: s.bat })),
     events: store.events.slice(-20).reverse(),
     peakWatts: Math.max(0, ...store.samples.filter((s) => dayKey(new Date(s.t)) === today).map((s) => s.pct * config.ratedWatts / 100)),
   };
@@ -162,4 +204,5 @@ http.createServer((req, res) => {
 poll();
 setInterval(poll, POLL_MS);
 setInterval(save, 30000);
+setInterval(sampleApps, APP_SAMPLE_MS);
 process.on('SIGINT', () => { fs.writeFileSync(DATA_FILE, JSON.stringify(store)); process.exit(); });
