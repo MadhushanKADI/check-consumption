@@ -1,2 +1,5 @@
 data.json
 config.json
+*.pyc
+__pycache__/
+consumption.json
