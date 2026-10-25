@@ -1,7 +1,6 @@
-data.json
-config.json
 *.pyc
 __pycache__/
 consumption.json
 data.json
 config.json
+tray.log

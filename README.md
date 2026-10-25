@@ -36,6 +36,12 @@ and an estimated monthly total.
 
     node server.js
 
+To run it hidden with a system tray icon (Open dashboard / Restart / Exit), use
+`powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File tray.ps1`, or
+register that command as a Windows scheduled task that runs at logon. The
+dashboard also lists the top apps by estimated energy (`sample-apps.ps1`,
+Windows only).
+
 Open http://localhost:15180 and set your UPS rated power (W) in the form.
 
 Environment variables: `VIEWPOWER_URL` (default `http://localhost:15178/ViewPower`),
