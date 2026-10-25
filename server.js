@@ -5,7 +5,8 @@ const path = require('path');
 
 const VP = process.env.VIEWPOWER_URL || 'http://localhost:15178/ViewPower';
 const PORT_NAME = process.env.UPS_PORT_NAME || 'USB24875B93';
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 15180);
+const HOST = process.env.HOST || '127.0.0.1';
 const POLL_MS = 5000;
 const MAX_GAP_MS = 60000; // don't integrate across outages longer than this
 const DATA_FILE = path.join(__dirname, 'data.json');
@@ -17,6 +18,17 @@ try { config = { ...config, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) 
 // energy[YYYY-MM-DD][hour] = Wh, stored as load-percent-hours so rating changes apply retroactively
 let store = { loadPctHours: {} };
 try { store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch {}
+store.samples ||= []; // {t, pct, vin, vout, bat} every SAMPLE_MS, kept for 24 h
+store.trackedHours ||= {}; // hours actually monitored, for projections
+store.trackedLoadPctHours ||= {}; // consumption from samples taken by this version only
+store.events ||= []; // power cuts: {start, end, minBat}
+const SAMPLE_MS = 30000;
+const KEEP_MS = 24 * 3600000;
+// an outage left open by a restart ends at the last known sample
+for (const e of store.events) {
+  if (e.end == null) e.end = Math.max(e.start, store.samples.length ? store.samples[store.samples.length - 1].t : e.start);
+}
+let lastSampleT = store.samples.length ? store.samples[store.samples.length - 1].t : 0;
 
 let live = { ok: false, error: 'not polled yet' };
 let last = null;
@@ -42,8 +54,25 @@ async function poll() {
       const k = dayKey(d);
       const day = (store.loadPctHours[k] ||= Array(24).fill(0));
       day[d.getHours()] += ((last.pct + loadPct) / 2) * hours;
+      const th = (store.trackedHours[k] ||= Array(24).fill(0));
+      th[d.getHours()] += hours;
+      const trackedLoad = (store.trackedLoadPctHours[k] ||= Array(24).fill(0));
+      trackedLoad[d.getHours()] += ((last.pct + loadPct) / 2) * hours;
     }
     last = { t: now, pct: loadPct };
+    const vin = parseFloat(w.inputVoltage), vout = parseFloat(w.outputVoltage);
+    const bat = Number(w.batteryCapacity);
+    if (now - lastSampleT >= SAMPLE_MS) {
+      lastSampleT = now;
+      store.samples.push({ t: now, pct: loadPct, vin, vout, bat });
+      while (store.samples.length && store.samples[0].t < now - KEEP_MS) store.samples.shift();
+    }
+    const onBattery = /batt/i.test(w.workMode || '') || (Number.isFinite(vin) && vin < 50);
+    const open = store.events[store.events.length - 1];
+    if (onBattery && !(open && open.end == null)) store.events.push({ start: now, end: null, minBat: bat });
+    else if (onBattery) open.minBat = Math.min(open.minBat, bat);
+    else if (open && open.end == null) open.end = now;
+    if (store.events.length > 200) store.events.splice(0, store.events.length - 200);
     live = {
       ok: true, time: now, loadPct,
       watts: (loadPct / 100) * config.ratedWatts,
@@ -83,6 +112,17 @@ function summary() {
     week, month: mon, total,
     hourlyToday: (store.loadPctHours[today] || Array(24).fill(0)).map((x) => x * config.ratedWatts / 100 / 1000),
     daily: daily.slice(-30),
+    projectedMonth: (() => {
+      const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const hoursTracked = Object.keys(store.trackedHours).filter((d) => d.startsWith(month))
+        .reduce((n, d) => n + store.trackedHours[d].reduce((a, b) => a + b, 0), 0);
+      const trackedKwh = Object.keys(store.trackedLoadPctHours).filter((d) => d.startsWith(month))
+        .reduce((n, d) => n + kwh(store.trackedLoadPctHours[d]), 0);
+      return hoursTracked > 0.1 ? (trackedKwh / hoursTracked) * dim * 24 : 0;
+    })(),
+    samples: store.samples.map((s) => ({ t: s.t, w: s.pct * config.ratedWatts / 100, vin: s.vin, vout: s.vout, bat: s.bat })),
+    events: store.events.slice(-20).reverse(),
+    peakWatts: Math.max(0, ...store.samples.filter((s) => dayKey(new Date(s.t)) === today).map((s) => s.pct * config.ratedWatts / 100)),
   };
 }
 
@@ -117,7 +157,7 @@ http.createServer((req, res) => {
     res.setHeader('Content-Type', types[path.extname(full)] || 'application/octet-stream');
     res.end(buf);
   });
-}).listen(PORT, () => console.log(`Dashboard: http://localhost:${PORT}`));
+}).listen(PORT, HOST, () => console.log(`Dashboard: http://${HOST}:${PORT}`));
 
 poll();
 setInterval(poll, POLL_MS);
