@@ -37,9 +37,15 @@
 <h3>Voltage, last 24 h (V) <span style="font-size:12px;color:#9ca3af">blue = input, green = output</span></h3><canvas id="volt"></canvas>
 <h3>Top apps by estimated energy</h3>
 <table id="apps" style="width:100%;border-collapse:collapse;margin-bottom:6px;font-size:14px"></table>
-<p style="font-size:12px;color:#9ca3af;margin-top:0">Estimate: power above the PC's idle level is shared between apps by their CPU and GPU activity. Games and GPU-heavy apps show up here.</p>
+<p style="font-size:12px;color:#9ca3af;margin-top:0">Estimate: power above the PC's idle level is shared between apps by their CPU and GPU activity. Time = how long the app was actively using CPU/GPU while the PC was under load (idle periods aren't sampled).</p>
 <h3>Power cuts</h3>
 <table id="events" style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:14px"></table>
+<h3>Daily usage calendar</h3>
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+  <button id="prevM" type="button">&lt;</button><strong id="calTitle" style="min-width:150px;text-align:center"></strong><button id="nextM" type="button">&gt;</button>
+  <span id="calTotal" style="color:#9ca3af;font-size:13px"></span>
+</div>
+<div id="cal" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:16px"></div>
 <h3>Today by hour (kWh)</h3><canvas id="hourly"></canvas>
 <h3>Last 30 days (kWh)</h3><canvas id="daily"></canvas>
 <form id="cfg">
@@ -84,6 +90,31 @@ function lines(canvas, series) {
   });
 }
 const fmtDur = (ms) => { const m = Math.round(ms / 60000); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : (ms < 60000 ? Math.round(ms / 1000) + ' s' : m + ' min'); };
+let calMonth = new Date(); calMonth.setDate(1);
+let calData = {};
+function renderCal() {
+  const y = calMonth.getFullYear(), m = calMonth.getMonth();
+  $('calTitle').textContent = calMonth.toLocaleString(undefined, { month: 'long', year: 'numeric' });
+  const dim = new Date(y, m + 1, 0).getDate(), first = (new Date(y, m, 1).getDay() + 6) % 7; // week starts Monday
+  const key = (d) => `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const vals = Array.from({ length: dim }, (_, i) => calData[key(i + 1)] || 0);
+  const max = Math.max(...vals, 0.001), sum = vals.reduce((a, b) => a + b, 0);
+  const todayKey = (() => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; })();
+  let html = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((n) => `<div style="text-align:center;font-size:12px;color:#9ca3af">${n}</div>`).join('');
+  html += '<div></div>'.repeat(first);
+  for (let d = 1; d <= dim; d++) {
+    const v = calData[key(d)];
+    const bg = v ? `rgba(59,130,246,${(0.15 + 0.7 * v / max).toFixed(2)})` : '#1f2937';
+    const border = key(d) === todayKey ? 'border:1px solid #f59e0b;' : '';
+    html += `<div style="background:${bg};${border}border-radius:8px;padding:6px;min-height:52px"><div style="font-size:11px;color:#9ca3af">${d}</div>` +
+      `<div style="font-size:13px;font-weight:600">${v ? v.toFixed(2) + ' kWh' : '–'}</div>` +
+      `<div style="font-size:10px;color:#9ca3af">${v ? Math.round(v * 1000) + ' Wh' : ''}</div></div>`;
+  }
+  $('cal').innerHTML = html;
+  $('calTotal').textContent = `Month total: ${sum.toFixed(2)} kWh` + (sum ? ` · avg ${(sum / vals.filter((x) => x > 0).length).toFixed(2)} kWh/day` : '');
+}
+$('prevM').onclick = () => { calMonth.setMonth(calMonth.getMonth() - 1); renderCal(); };
+$('nextM').onclick = () => { calMonth.setMonth(calMonth.getMonth() + 1); renderCal(); };
 async function refresh() {
   try {
     const d = await (await fetch('/api/summary')).json();
@@ -110,13 +141,15 @@ async function refresh() {
     ]);
     $('apps').innerHTML = d.apps.length
       ? '<tr style="color:#9ca3af;text-align:left"><th>App</th><th>Today</th><th>7 days</th><th>Total</th></tr>' + d.apps.map((a) =>
-        `<tr><td>${a.name.replace(/[<>&]/g, '')}</td><td>${a.today.toFixed(3)} kWh</td><td>${a.week.toFixed(3)} kWh</td><td>${a.total.toFixed(3)} kWh</td></tr>`).join('')
+        `<tr><td>${a.name.replace(/[<>&]/g, '')}</td>` + [[a.today, a.secToday], [a.week, a.secWeek], [a.total, a.secTotal]]
+          .map(([k, s]) => `<td>${k.toFixed(3)} kWh <span style="color:#9ca3af">· ${fmtDur(s * 1000)}</span></td>`).join('') + '</tr>').join('')
       : '<tr><td style="color:#9ca3af">Collecting data...</td></tr>';
     const ev = $('events');
     ev.innerHTML = d.events.length
       ? '<tr style="color:#9ca3af;text-align:left"><th>Started</th><th>Duration</th><th>Lowest battery</th></tr>' + d.events.map((e) =>
         `<tr><td>${new Date(e.start).toLocaleString()}</td><td>${e.end == null ? 'ongoing' : fmtDur(e.end - e.start)}</td><td>${e.minBat}%</td></tr>`).join('')
       : '<tr><td style="color:#9ca3af">No power cuts recorded</td></tr>';
+    calData = d.calendar; renderCal();
     bars($('hourly'), d.hourlyToday.map((_, i) => i), d.hourlyToday);
     bars($('daily'), d.daily.map((x) => x.date.slice(5)), d.daily.map((x) => x.kwh));
   } catch (e) { $('err').style.display = 'block'; $('err').textContent = 'Server unreachable'; }

@@ -24,6 +24,7 @@ store.trackedHours ||= {}; // hours actually monitored, for projections
 store.trackedLoadPctHours ||= {}; // consumption from samples taken by this version only
 store.events ||= []; // power cuts: {start, end, minBat}
 store.appWh ||= {}; // estimated energy per app: appWh[YYYY-MM-DD][name] = Wh
+store.appSec ||= {}; // active time per app: appSec[YYYY-MM-DD][name] = seconds
 const SAMPLE_MS = 30000;
 const KEEP_MS = 24 * 3600000;
 // an outage left open by a restart ends at the last known sample
@@ -110,7 +111,11 @@ function sampleApps() {
         const total = scored.reduce((x, a) => x + a.s, 0);
         if (!total) return;
         const day = (store.appWh[dayKey(new Date())] ||= {});
-        for (const a of scored) day[a.n] = (day[a.n] || 0) + dynamic * (a.s / total) * (APP_SAMPLE_MS / 3600000);
+        const secs = (store.appSec[dayKey(new Date())] ||= {});
+        for (const a of scored) {
+          day[a.n] = (day[a.n] || 0) + dynamic * (a.s / total) * (APP_SAMPLE_MS / 3600000);
+          secs[a.n] = (secs[a.n] || 0) + APP_SAMPLE_MS / 1000;
+        }
       } catch {}
     });
 }
@@ -141,17 +146,27 @@ function summary() {
     week, month: mon, total,
     hourlyToday: (store.loadPctHours[today] || Array(24).fill(0)).map((x) => x * config.ratedWatts / 100 / 1000),
     daily: daily.slice(-30),
+    calendar: Object.fromEntries(daily.map((x) => [x.date, x.kwh])),
     apps: (() => {
-      const week = {}, all = {};
+      const week = {}, all = {}, tWeek = {}, tAll = {};
       for (const [d, m] of Object.entries(store.appWh)) {
         for (const [n, wh] of Object.entries(m)) {
           all[n] = (all[n] || 0) + wh / 1000;
           if (d >= weekAgo) week[n] = (week[n] || 0) + wh / 1000;
         }
       }
+      for (const [d, m] of Object.entries(store.appSec)) {
+        for (const [n, s] of Object.entries(m)) {
+          tAll[n] = (tAll[n] || 0) + s;
+          if (d >= weekAgo) tWeek[n] = (tWeek[n] || 0) + s;
+        }
+      }
       const todayApps = store.appWh[today] || {};
-      return Object.keys(all).map((n) => ({ name: n, today: (todayApps[n] || 0) / 1000, week: week[n] || 0, total: all[n] }))
-        .sort((a, b) => b.week - a.week || b.total - a.total).slice(0, 15);
+      const todaySec = store.appSec[today] || {};
+      return Object.keys(all).map((n) => ({
+        name: n, today: (todayApps[n] || 0) / 1000, week: week[n] || 0, total: all[n],
+        secToday: todaySec[n] || 0, secWeek: tWeek[n] || 0, secTotal: tAll[n] || 0,
+      })).sort((a, b) => b.week - a.week || b.total - a.total).slice(0, 15);
     })(),
     projectedMonth: (() => {
       const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
